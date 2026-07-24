@@ -1,0 +1,17 @@
+# --- Captura y reproducción de audio en tiempo real ---
+sounddevice==0.4.7
+soundfile==0.12.1
+
+# --- Procesamiento numérico y DSP (FFT, filtros, convolución) ---
+numpy==1.26.4
+scipy==1.13.1
+
+# --- Interfaz gráfica (botones, sliders, perillas) ---
+PyQt5==5.15.10
+pyqtgraph==0.13.7      # gráficas rápidas en tiempo real (tiempo + espectro)
+
+# --- Utilidades ---
+matplotlib==3.9.0      # opcional, para gráficas estáticas en el informe
+
+# --- Testing ---
+pytest==8.2.2
