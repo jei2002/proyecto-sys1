@@ -8,31 +8,62 @@ separado; aquí se ensambla la cadena completa (ver diagrama de arquitectura).
 """
 
 from src.audio_io import AudioEngine, SAMPLE_RATE
-from src.filters import DelayEffect, design_noise_filter, apply_noise_reduction
-# from src.pitch_robot import pitch_shift, robot_effect
+from src.filters import (
+    DelayEffect,
+    design_noise_filter,
+    apply_noise_reduction,
+    design_eq_bands,
+    apply_eq,
+)
+from src.pitch_robot import robot_effect
 # from src.gui import run_app
 
-# --- FASE 3: primer efecto real conectado a la cadena ---
-# 0.3 s de retardo, con realimentación (feedback) de 0.5.
-# Estos dos valores serán, más adelante, los que controlen los sliders
-# de la GUI ("tiempo de delay" y "feedback").
+# --- FASE 3: efectos conectados a la cadena ---
+# Estos parámetros serán, más adelante, los que controlen los sliders
+# y botones de la GUI. Por ahora los cambiamos aquí a mano para probar.
+
+ENABLED = {
+    "eq": False,
+    "robot": True,
+    "delay": False,
+}
+
+# Delay: 0.3 s de retardo, con realimentación (feedback) de 0.5.
 delay_effect = DelayEffect(
     delay_samples=int(0.3 * SAMPLE_RATE),
     feedback_gain=0.5,
     sample_rate=SAMPLE_RATE,
 )
 
+# Ecualizador: 3 filtros independientes (graves/medios/agudos) diseñados
+# una sola vez al arrancar (son sistemas LTI fijos; lo único que cambia
+# en vivo es la ganancia con la que se suma cada banda).
+eq_bands = design_eq_bands(sample_rate=SAMPLE_RATE)
+eq_gains = {"low": 1.0, "mid": 1.0, "high": 1.8}  # prueba: agudos realzados
+
+# Robot: frecuencia de la portadora (Hz). Entre más baja, más "vibración"
+# grave se nota; entre más alta, el timbre se vuelve más metálico/agudo.
+robot_carrier_freq = 200
+
 
 def process_block(x):
     """
     Cadena de procesamiento aplicada a cada bloque de audio capturado.
 
-    Fase 3: se agrega el primer efecto real (delay). El objeto
-    `delay_effect` mantiene su buffer circular entre llamadas (es un
-    sistema con memoria / estado, como corresponde a su ecuación de
-    diferencias y[n] = x[n] + g*x[n-D]), por eso vive fuera de la función.
+    Fase 3: cadena = ecualizador -> robot -> delay.
     """
-    return delay_effect.process(x)
+    y = x
+
+    if ENABLED["eq"]:
+        y = apply_eq(y, eq_bands, eq_gains)
+
+    if ENABLED["robot"]:
+        y = robot_effect(y, carrier_freq=robot_carrier_freq, sample_rate=SAMPLE_RATE)
+
+    if ENABLED["delay"]:
+        y = delay_effect.process(y)
+
+    return y
 
 
 if __name__ == "__main__":
