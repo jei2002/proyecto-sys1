@@ -1,22 +1,5 @@
-"""
-filters.py
-----------
-Responsable: Persona B
-
-Todos los sistemas LTI del proyecto expresados como ecuaciones de
-diferencias / filtros digitales:
-    - Reducción de ruido ambiente
-    - Ecualizador de 3 bandas
-    - Delay
-    - Reverb (convolución con IR / modelo de Schroeder)
-
-Cada función debe documentar su ecuación de diferencias y su función
-de transferencia H(z), pues eso es lo que se sustenta en el informe.
-"""
-
 import numpy as np
-from scipy.signal import butter, lfilter, lfilter_zi
-
+from scipy.signal import butter, lfilter, lfilter_zi, fftconvolve
 
 # ---------------------------------------------------------------------
 # 1. Reducción de ruido
@@ -31,8 +14,11 @@ def design_noise_filter(cutoff=100, sample_rate=44100, order=4):
     b, a = butter(order, cutoff / nyq, btype="highpass")
     return b, a
 
-
 def apply_noise_reduction(x, b, a, zi=None):
+    """
+    Aplica el filtro de ruido manteniendo el estado acústico (zi) 
+    para evitar 'clicks' o 'pops' entre bloques de audio en tiempo real.
+    """
     y, zf = lfilter(b, a, x, zi=zi if zi is not None else lfilter_zi(b, a) * x[0])
     return y, zf
 
@@ -52,10 +38,9 @@ def design_eq_bands(sample_rate=44100):
     high_b, high_a = butter(2, 3000 / nyq, btype="highpass")
     return {"low": (low_b, low_a), "mid": (mid_b, mid_a), "high": (high_b, high_a)}
 
-
 def apply_eq(x, bands, gains):
     """
-    gains: dict con 'low', 'mid', 'high' (ej. desde los sliders, 0.0-2.0)
+    Aplica las ganancias (0.0 a 2.0) a cada banda LTI de forma independiente.
     """
     y = np.zeros_like(x)
     for band_name, (b, a) in bands.items():
@@ -71,7 +56,6 @@ class DelayEffect:
     Ecuación de diferencias directa: y[n] = x[n] + g * x[n - D]
     Se implementa con un buffer circular para no recalcular todo el historial.
     """
-
     def __init__(self, delay_samples, feedback_gain=0.4, sample_rate=44100):
         self.delay_samples = delay_samples
         self.g = feedback_gain
@@ -83,18 +67,61 @@ class DelayEffect:
         for n, sample in enumerate(x):
             delayed = self.buffer[self.index]
             y[n] = sample + self.g * delayed
+            # Actualizamos el buffer con el nuevo eco (Feedback)
             self.buffer[self.index] = sample + self.g * delayed
             self.index = (self.index + 1) % self.delay_samples
         return y
 
 
 # ---------------------------------------------------------------------
-# 4. Reverb
+# 4. Reverb (Overlap-Add)
 # ---------------------------------------------------------------------
-def apply_convolution_reverb(x, impulse_response):
+class ReverbEffect:
     """
-    Reverb por convolución directa con una respuesta al impulso (IR)
-    de una sala real. Este es EL ejemplo más directo de convolución
-    del curso: y[n] = x[n] * h[n].
+    Reverb por convolución con algoritmo Overlap-Add para tiempo real.
+    y[n] = x[n] * h[n] (convolución).
+    
+    A diferencia de np.convolve (que recorta la cola entre bloques), esta clase
+    guarda el "excedente" acústico en `self.tail` y lo suma suavemente 
+    al inicio del siguiente bloque.
     """
-    return np.convolve(x, impulse_response, mode="same")
+    def __init__(self, reverb_time=0.25, sample_rate=44100):
+        self.reverb_length = int(reverb_time * sample_rate)
+        t_rev = np.linspace(0, 1.0, self.reverb_length)
+        
+        # Generamos una respuesta acústica (Ruido aleatorio con decaimiento exponencial)
+        # Esto imita cómo rebota el sonido en una habitación real
+        self.ir = np.random.randn(self.reverb_length) * np.exp(-t_rev * 7)
+        self.ir = self.ir / np.max(np.abs(self.ir)) * 0.25 
+        self.ir[0] = 1.0 
+        
+        # Memoria interna para la cola superpuesta (Overlap-Add)
+        self.tail = np.zeros(self.reverb_length - 1)
+
+    def process(self, x):
+        # Asegurarnos de que procesamos en Mono (1 canal)
+        if x.ndim > 1: 
+            x = x[:, 0]
+            
+        # 1. Convolución rápida (Fast Fourier Convolution)
+        # fftconvolve es vital aquí porque procesar miles de muestras con convolve estándar congelaría el PC.
+        y_conv = fftconvolve(x, self.ir, mode='full')
+        N = len(x)
+        
+        # 2. Extraer el segmento exacto que pide la tarjeta (N muestras)
+        y_out = y_conv[:N].copy()
+        
+        # 3. Sumar la cola acústica (eco) del bloque anterior
+        n_tail = min(N, len(self.tail))
+        y_out[:n_tail] += self.tail[:n_tail]
+        
+        # 4. Guardar la nueva cola "sobrante" para el siguiente bloque de audio
+        new_tail = y_conv[N:]
+        old_tail_leftover = self.tail[N:] if len(self.tail) > N else np.zeros(0)
+        
+        max_len = max(len(new_tail), len(old_tail_leftover))
+        self.tail = np.zeros(max_len)
+        self.tail[:len(new_tail)] += new_tail
+        self.tail[:len(old_tail_leftover)] += old_tail_leftover
+        
+        return y_out

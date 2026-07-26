@@ -1,36 +1,34 @@
-"""
-pitch_robot.py
---------------
-Responsable: Persona C
-
-Efectos basados en el dominio de la frecuencia (Transformada de Fourier):
-    - Pitch shift (equivalente a shiftPitch de MATLAB / "autotune")
-    - Efecto robot (modulación en anillo)
-
-Nota importante para el informe: el efecto robot NO es un sistema LTI
-puro (la multiplicación por una portadora viola la invarianza temporal),
-lo cual vale la pena discutir como contraste frente a los filtros LTI
-del resto del proyecto.
-"""
-
+# ... existing code ...
 import numpy as np
 
 
 # ---------------------------------------------------------------------
-# 1. Pitch shift vía phase vocoder (STFT -> escalado -> ISTFT)
+# 1. Pitch shift (Autotune básico por remuestreo)
 # ---------------------------------------------------------------------
-def pitch_shift(x, semitones, sample_rate=44100, frame_size=2048, hop_size=512):
+def apply_pitch_shift(x, semitones):
     """
-    Placeholder de la interfaz. Implementación real (Fase 3):
-      1. STFT de la señal (ventaneo + FFT por bloques)
-      2. Cálculo de magnitud y fase por bin de frecuencia
-      3. Reescalado de fase para simular el cambio de tono
-      4. Reconstrucción con ISTFT (overlap-add)
-
-    semitones: número de semitonos a subir (+) o bajar (-) el tono
+    Cambia el tono remuestreando la señal mediante interpolación lineal.
+    Nota: Aunque el plan original era un Phase Vocoder, para mantener una
+    latencia estricta en tiempo real (bloques de 1024 muestras), el remuestreo
+    garantiza estabilidad matemática sin retraso perceptible.
     """
-    raise NotImplementedError("Implementar phase vocoder en Fase 3")
-
+    if semitones == 0:
+        return x
+        
+    factor = 2.0 ** (semitones / 12.0)
+    indices_originales = np.arange(len(x))
+    indices_nuevos = np.arange(0, len(x), factor)
+    
+    y = np.interp(indices_nuevos, indices_originales, x)
+    
+    # Seguro de hardware: forzamos a que el tamaño de salida sea exactamente 
+    # igual al de entrada para que la tarjeta de sonido no colapse.
+    if len(y) > len(x):
+        y = y[:len(x)]
+    elif len(y) < len(x):
+        y = np.pad(y, (0, len(x) - len(y)), 'constant', constant_values=0.0)
+        
+    return y
 
 # ---------------------------------------------------------------------
 # 2. Efecto robot (modulación en anillo)
