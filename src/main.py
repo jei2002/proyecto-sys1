@@ -7,7 +7,7 @@ from scipy.io import wavfile
 from scipy.signal import lfilter_zi
 
 # Importamos modularmente desde los otros archivos
-from src.audio_io import AudioEngine, SAMPLE_RATE
+from src.audio_io import AudioEngine,FilePlayerEngine, SAMPLE_RATE
 from src.filters import (
     DelayEffect,
     ReverbEffect,
@@ -21,13 +21,31 @@ from src.gui import MainWindow
 
 
 class DSPProcessor:
+    def _aplicar_con_fade(self, nombre_efecto, y_seco, funcion_efecto):
+        estaba_activo = self.enabled_anterior[nombre_efecto]
+        esta_activo = self.enabled[nombre_efecto]
+        
+        if esta_activo and not estaba_activo:
+            y_mojado = funcion_efecto(y_seco)
+            fade = np.linspace(0, 1, len(y_seco))
+            resultado = y_seco * (1 - fade) + y_mojado * fade
+        elif not esta_activo and estaba_activo:
+            y_mojado = funcion_efecto(y_seco)
+            fade = np.linspace(1, 0, len(y_seco))
+            resultado = y_seco * (1 - fade) + y_mojado * fade
+        elif esta_activo:
+            resultado = funcion_efecto(y_seco)
+        else:
+            resultado = y_seco
+        
+        self.enabled_anterior[nombre_efecto] = esta_activo
+        return resultado
     """
     Clase que encapsula todo el estado y procesamiento de audio.
     Elimina la necesidad de variables globales y previene el "God Object".
     """
     def __init__(self, sample_rate):
-        self.sample_rate = sample_rate
-        
+        self.sample_rate = sample_rate 
         # 1. Estados booleanos de efectos
         self.enabled = {
             "noise": False, "eq": False, "robot": False,
@@ -52,7 +70,28 @@ class DSPProcessor:
         self.is_recording = False
         self.recorded_frames = []
         self.latest_audio_block = np.zeros(1024)
+        self.enabled_anterior = dict(self.enabled)
+        self.master_volume = 1.0  # 1.0 = 100%, sin cambios
 
+    def _aplicar_con_fade(self, nombre_efecto, y_seco, funcion_efecto):
+        estaba_activo = self.enabled_anterior[nombre_efecto]
+        esta_activo = self.enabled[nombre_efecto]
+        
+        if esta_activo and not estaba_activo:
+            y_mojado = funcion_efecto(y_seco)
+            fade = np.linspace(0, 1, len(y_seco))
+            resultado = y_seco * (1 - fade) + y_mojado * fade
+        elif not esta_activo and estaba_activo:
+            y_mojado = funcion_efecto(y_seco)
+            fade = np.linspace(1, 0, len(y_seco))
+            resultado = y_seco * (1 - fade) + y_mojado * fade
+        elif esta_activo:
+            resultado = funcion_efecto(y_seco)
+        else:
+            resultado = y_seco
+        
+        self.enabled_anterior[nombre_efecto] = esta_activo
+        return resultado
     def process_block(self, x):
         """
         Cadena de procesamiento lineal aplicada a cada bloque de audio capturado.
@@ -67,24 +106,38 @@ class DSPProcessor:
             y = y * 0.6        # Headroom: baja el volumen crudo para dar espacio a los efectos
 
             # --- APLICACIÓN MODULAR DE EFECTOS ---
+            y = self._aplicar_con_fade(
+                "noise", y,
+                lambda señal: apply_noise_reduction(señal, self.noise_b, self.noise_a, zi=self.noise_zi)[0]
+            )
+
             if self.enabled["noise"]:
-                y, self.noise_zi = apply_noise_reduction(y, self.noise_b, self.noise_a, zi=self.noise_zi)
+                _, self.noise_zi = apply_noise_reduction(y, self.noise_b, self.noise_a, zi=self.noise_zi)
 
-            if self.enabled["pitch"]:
-                y = apply_pitch_shift(y, self.pitch_semitones)
+            y = self._aplicar_con_fade(
+                "pitch", y,
+                lambda señal: apply_pitch_shift(señal, self.pitch_semitones)
+            )
 
-            if self.enabled["eq"]:
-                y = apply_eq(y, self.eq_bands, self.eq_gains)
+            y = self._aplicar_con_fade(
+                "eq", y,
+                lambda señal: apply_eq(señal, self.eq_bands, self.eq_gains)
+            )
 
-            if self.enabled["robot"]:
-                y = robot_effect(y, carrier_freq=self.robot_freq, sample_rate=self.sample_rate)
+            y = self._aplicar_con_fade(
+                "robot", y,
+                lambda señal: robot_effect(señal, carrier_freq=self.robot_freq, sample_rate=self.sample_rate)
+            )
 
-            if self.enabled["delay"]:
-                y = self.delay.process(y)
+            y = self._aplicar_con_fade(
+                "delay", y,
+                lambda señal: self.delay.process(señal)
+            )
 
-            if self.enabled["reverb"]:
-                y = self.reverb.process(y)
-
+            y = self._aplicar_con_fade(
+                "reverb", y,
+                lambda señal: self.reverb.process(señal)
+            )
             # --- ESCUDO ANTI-EXPLOSIONES MATEMÁTICAS ---
             if np.isnan(y).any() or np.isinf(y).any() or np.max(np.abs(y)) > 50.0:
                 y = np.zeros_like(y)
@@ -95,6 +148,7 @@ class DSPProcessor:
 
             # --- LIMITADOR ANALÓGICO ---
             # Tanh curva suavemente los picos, evitando saturación digital fea
+            y=y*self.master_volume
             y = np.tanh(y)
             y = y.astype(np.float32)
 
@@ -127,6 +181,8 @@ if __name__ == "__main__":
     
     # 2. Enlazamos el cerebro al motor de tarjeta de sonido
     engine = AudioEngine(process_callback=processor.process_block)
+    file_engine=FilePlayerEngine(process_callback=processor.process_block,sample_rate=SAMPLE_RATE)
+    usuario_arrastrando_slider = {"activo": False}
     print("Iniciando motor de audio DSP...")
     engine.start()
 
@@ -136,13 +192,18 @@ if __name__ == "__main__":
 
     # --- PUENTE: UI -> DSP ---
     # Conectamos las señales de la interfaz gráfica a los métodos de nuestra clase procesadora
+    def cambiar_volumen(valor): 
+        processor.master_volume=valor/100.0
     def toggle_noise(estado): processor.enabled["noise"] = (estado == 2)
     def toggle_robot(estado): processor.enabled["robot"] = (estado == 2)
     def toggle_delay(estado): processor.enabled["delay"] = (estado == 2)
     def toggle_eq(estado): processor.enabled["eq"] = (estado == 2)
     def toggle_reverb(estado): processor.enabled["reverb"] = (estado == 2)
     def toggle_pitch(estado): processor.enabled["pitch"] = (estado == 2)
-    
+    def formatear_tiempo(segundos):
+        m = int(segundos // 60)
+        s = int(segundos % 60)
+        return f"{m:02d}:{s:02d}"
     def cambiar_freq_robot(valor): processor.robot_freq = valor
     def cambiar_tono_pitch(valor): processor.pitch_semitones = valor
 
@@ -173,7 +234,7 @@ if __name__ == "__main__":
     window.eq_window.slider_low.valueChanged.connect(cambiar_ganancia_low)
     window.eq_window.slider_mid.valueChanged.connect(cambiar_ganancia_mid)
     window.eq_window.slider_high.valueChanged.connect(cambiar_ganancia_high)
-
+    window.slider_volumen.valueChanged.connect(cambiar_volumen)
     # --- LÓGICA DE GRABACIÓN Y EXPORTACIÓN ---
     def toggle_recording():
         if not processor.is_recording:
@@ -217,26 +278,70 @@ if __name__ == "__main__":
             return
             
         audio_data = np.nan_to_num(audio_data)
-        
-        # Osciloscopio
+    
         window.plot_time.clear()
         window.plot_time.plot(audio_data, pen=pg.mkPen(color='g', width=1))
-        
-        # Analizador de Espectro (Transformada Rápida de Fourier - FFT)
+    
         fft_data = np.abs(np.fft.rfft(audio_data))
         freqs = np.fft.rfftfreq(len(audio_data), 1/SAMPLE_RATE)
-        
+    
         window.plot_freq.clear()
         window.plot_freq.plot(freqs, fft_data, pen=pg.mkPen(color='c', width=1))
 
+        if file_engine.is_loaded() and not usuario_arrastrando_slider["activo"]:
+            actual, total = file_engine.get_progress()
+            if total > 0:
+                fraccion = actual / total
+                window.slider_progreso.setValue(int(fraccion * 1000))
+            window.lbl_tiempo.setText(f"{formatear_tiempo(actual)} / {formatear_tiempo(total)}")
+
+            if file_engine.paused and actual >= total - 0.05:
+                window.btn_play_pause.setText("Play")
     timer = QtCore.QTimer()
     timer.timeout.connect(update_plots)
     timer.start(50) 
+    def cargar_audio():
+        filepath, _ = QtWidgets.QFileDialog.getOpenFileName(
+            window, "Elegir archivo de audio", "", "Audio (*.wav *.flac *.ogg)"
+        )
+        if filepath:
+            engine.stop()
+            file_engine.load_file(filepath)
+            file_engine.start()
+            window.btn_play_pause.setEnabled(True)
+            window.btn_play_pause.setText("Play")
+            window.slider_progreso.setEnabled(True)
+            window.slider_progreso.setValue(0)
+            window.lbl_archivo_cargado.setText(os.path.basename(filepath))
+            print(f" Archivo cargado: {filepath}")
 
+    def toggle_play_pause():
+        if not file_engine.is_loaded():
+            return
+        if file_engine.paused:
+            file_engine.play()
+            window.btn_play_pause.setText("Pausa")
+        else:
+            file_engine.pause()
+            window.btn_play_pause.setText("Play")
+    def slider_presionado():
+        usuario_arrastrando_slider["activo"] = True
+
+    def slider_soltado():
+        usuario_arrastrando_slider["activo"] = False
+        _, total = file_engine.get_progress()
+        fraccion = window.slider_progreso.value() / 1000.0
+        file_engine.seek(fraccion * total)
+
+    window.slider_progreso.sliderPressed.connect(slider_presionado)
+    window.slider_progreso.sliderReleased.connect(slider_soltado)
+    window.btn_cargar_audio.clicked.connect(cargar_audio)
+    window.btn_play_pause.clicked.connect(toggle_play_pause)
     # --- BUCLE PRINCIPAL DE LA APLICACIÓN ---
     window.show()
     app.exec_()
     
     print("Apagando motor...")
     engine.stop()
+    file_engine.stop()
     sys.exit(0)
