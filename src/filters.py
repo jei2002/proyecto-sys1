@@ -22,6 +22,41 @@ def apply_noise_reduction(x, b, a, zi=None):
     y, zf = lfilter(b, a, x, zi=zi if zi is not None else lfilter_zi(b, a) * x[0])
     return y, zf
 
+class NoiseGate:
+    """
+    Compuerta de ruido (Noise Gate) basada en bloques.
+    Calcula la energía (RMS) del bloque. Si está por debajo del umbral 
+    (es decir, es ruido de fondo), silencia la salida suavemente. 
+    Si alguien habla (supera el umbral), deja pasar el audio.
+    """
+    def __init__(self, threshold=0.015):
+        self.threshold = threshold
+        self.is_open = False
+        
+    def process(self, x):
+        # Calcular la energía promedio del bloque (RMS)
+        rms = np.sqrt(np.mean(x**2))
+        
+        if rms < self.threshold:
+            # Nivel bajo -> Silencio / Cerrar compuerta
+            if self.is_open:
+                # Fade out para que el corte no sea brusco (evita clicks)
+                fade = np.linspace(1, 0, len(x))
+                y = x * fade
+                self.is_open = False
+            else:
+                y = np.zeros_like(x)
+        else:
+            # Nivel alto (voz) -> Dejar pasar / Abrir compuerta
+            if not self.is_open:
+                # Fade in para evitar un "pop" repentino al abrir
+                fade = np.linspace(0, 1, len(x))
+                y = x * fade
+                self.is_open = True
+            else:
+                y = x
+        return y
+
 
 # ---------------------------------------------------------------------
 # 2. Ecualizador de 3 bandas
@@ -46,6 +81,27 @@ def apply_eq(x, bands, gains):
     for band_name, (b, a) in bands.items():
         y += gains.get(band_name, 1.0) * lfilter(b, a, x)
     return y
+
+
+# ---------------------------------------------------------------------
+# 2.5. Filtro Pasa-Bajos Dinámico (Filtro Global)
+# ---------------------------------------------------------------------
+def design_lpf(cutoff, sample_rate=44100, order=2):
+    """
+    Filtro pasa-bajos estándar para atenuar frecuencias altas dinámicamente.
+    """
+    nyq = 0.5 * sample_rate
+    # Limitamos el corte para evitar errores matemáticos cerca de Nyquist
+    cutoff = np.clip(cutoff, 20, nyq - 100) 
+    b, a = butter(order, cutoff / nyq, btype="lowpass")
+    return b, a
+
+def apply_lpf(x, b, a, zi=None):
+    """
+    Aplica el filtro guardando el estado continuo para arrastrar el slider.
+    """
+    y, zf = lfilter(b, a, x, zi=zi if zi is not None else lfilter_zi(b, a) * x[0])
+    return y, zf
 
 
 # ---------------------------------------------------------------------
