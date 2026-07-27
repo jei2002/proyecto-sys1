@@ -12,28 +12,31 @@ class EQWindow(QtWidgets.QWidget):
         self.resize(300, 200)
         
         layout = QtWidgets.QVBoxLayout()
-        
-        # Sliders para las 3 bandas
-        self.slider_low = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.slider_low.setRange(0, 20)
-        self.slider_low.setValue(10)
-        
-        self.slider_mid = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.slider_mid.setRange(0, 20)
-        self.slider_mid.setValue(10)
-        
-        self.slider_high = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.slider_high.setRange(0, 20)
-        self.slider_high.setValue(10)
-        
+        self.slider_low,fila_low=self._crear_fila_eq("Low")
+        self.slider_mid,fila_mid=self._crear_fila_eq("Mid")
+        self.slider_high,fila_high=self._crear_fila_eq("High")
         layout.addWidget(QtWidgets.QLabel("Graves (Low):"))
-        layout.addWidget(self.slider_low)
+        layout.addLayout(fila_low)
         layout.addWidget(QtWidgets.QLabel("Medios (Mid):"))
-        layout.addWidget(self.slider_mid)
+        layout.addLayout(fila_mid)
         layout.addWidget(QtWidgets.QLabel("Agudos (High):"))
-        layout.addWidget(self.slider_high)
+        layout.addLayout(fila_high)
         
         self.setLayout(layout)
+
+    def _crear_fila_eq(self,nombre_banda):
+        slider=QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        slider.setRange(0,20)
+        slider.setValue(10)
+        lbl_valor=QtWidgets.QLabel("x1.0")
+        lbl_valor.setMinimumWidth(50)
+        slider.valueChanged.connect(
+        lambda v, lbl=lbl_valor: lbl.setText(f"x{v/10.0:.1f}")
+        )             
+        fila=QtWidgets.QHBoxLayout()
+        fila.addWidget(slider)
+        fila.addWidget(lbl_valor)
+        return slider,fila
 
 class MainWindow(QtWidgets.QWidget):
     def __init__(self):
@@ -94,21 +97,56 @@ class MainWindow(QtWidgets.QWidget):
         self.slider_pitch = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider_pitch.setRange(-12, 12) 
         self.slider_pitch.setValue(0)
-        params_layout.addRow("Tono (Semitonos):", self.slider_pitch)
+        self.lbl_pitch_valor = QtWidgets.QLabel("0 semitonos")
+        self.lbl_pitch_valor.setMinimumWidth(90)
+        row_pitch = QtWidgets.QHBoxLayout()
+        row_pitch.addWidget(self.slider_pitch)
+        row_pitch.addWidget(self.lbl_pitch_valor)
+        params_layout.addRow("Tono (Semitonos):", row_pitch)
+        self.slider_pitch.valueChanged.connect(
+        lambda v: self.lbl_pitch_valor.setText(f"{v:+d} semitonos")
+        )
 
         self.slider_robot = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider_robot.setRange(100, 500)
         self.slider_robot.setValue(200)
-        params_layout.addRow("Frecuencia Robot (Hz):", self.slider_robot)
+        self.lbl_robot_valor = QtWidgets.QLabel("200 Hz")
+        self.lbl_robot_valor.setMinimumWidth(90)
+        row_robot = QtWidgets.QHBoxLayout()
+        row_robot.addWidget(self.slider_robot)
+        row_robot.addWidget(self.lbl_robot_valor)
+        params_layout.addRow("Frecuencia (Hz):", row_robot)
+        self.slider_robot.valueChanged.connect(
+        lambda v: self.lbl_robot_valor.setText(f"{v} Hz")
+        )
         
         self.slider_delay = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider_delay.setRange(1, 10)
         self.slider_delay.setValue(3)
-        params_layout.addRow("Tiempo de Delay (x0.1s):", self.slider_delay)
-        
+        self.lbl_delay_valor = QtWidgets.QLabel("0.3 s")
+        self.lbl_delay_valor.setMinimumWidth(90)
+        row_delay = QtWidgets.QHBoxLayout()
+        row_delay.addWidget(self.slider_delay)
+        row_delay.addWidget(self.lbl_delay_valor)
+        params_layout.addRow("Tiempo de Delay (s):", row_delay)
+        self.slider_delay.valueChanged.connect(
+        lambda v: self.lbl_delay_valor.setText(f"{v/10.0:.1f} s")
+        ) 
         params_group.setLayout(params_layout)
         layout.addWidget(params_group)
-
+        # Volumen General
+        self.slider_volumen = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_volumen.setRange(0, 150)  
+        self.slider_volumen.setValue(100)
+        self.lbl_volumen_valor = QtWidgets.QLabel("100%")
+        self.lbl_volumen_valor.setMinimumWidth(90)
+        row_volumen = QtWidgets.QHBoxLayout()
+        row_volumen.addWidget(self.slider_volumen)
+        row_volumen.addWidget(self.lbl_volumen_valor)
+        params_layout.addRow("Volumen General:", row_volumen)
+        self.slider_volumen.valueChanged.connect(
+            lambda v: self.lbl_volumen_valor.setText(f"{v}%")
+        )
         # --- SECCIÓN 4: Botón de Grabación ---
         self.btn_record = QtWidgets.QPushButton("🔴 Grabar Voz")
         self.btn_record.setStyleSheet("""
@@ -121,7 +159,36 @@ class MainWindow(QtWidgets.QWidget):
         layout.addWidget(self.btn_record)
 
         self.setLayout(layout)
+        file_group = QtWidgets.QGroupBox("Importar y Reproducir Audio")
+        file_v_layout = QtWidgets.QVBoxLayout()
 
+# Fila de botones
+        file_botones_layout = QtWidgets.QHBoxLayout()
+        self.btn_cargar_audio = QtWidgets.QPushButton("Cargar Audio")
+        self.btn_play_pause = QtWidgets.QPushButton("Play")
+        self.btn_play_pause.setEnabled(False)
+        self.lbl_archivo_cargado = QtWidgets.QLabel("Ningún archivo cargado")
+
+        file_botones_layout.addWidget(self.btn_cargar_audio)
+        file_botones_layout.addWidget(self.btn_play_pause)
+        file_botones_layout.addWidget(self.lbl_archivo_cargado)
+
+# Fila de progreso (slider + tiempo)
+        file_progreso_layout = QtWidgets.QHBoxLayout()
+        self.slider_progreso = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_progreso.setRange(0, 1000) 
+        self.slider_progreso.setValue(0)
+        self.slider_progreso.setEnabled(False)
+        self.lbl_tiempo = QtWidgets.QLabel("00:00 / 00:00")
+        self.lbl_tiempo.setMinimumWidth(100)
+
+        file_progreso_layout.addWidget(self.slider_progreso)
+        file_progreso_layout.addWidget(self.lbl_tiempo)
+
+        file_v_layout.addLayout(file_botones_layout)
+        file_v_layout.addLayout(file_progreso_layout)
+        file_group.setLayout(file_v_layout)
+        layout.addWidget(file_group)
     def conectar_eventos(self):
         # Cuando se marca el Ecualizador, mostramos la sub-ventana
         self.chk_eq.stateChanged.connect(self.toggle_eq_window)
